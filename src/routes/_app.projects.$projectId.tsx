@@ -176,11 +176,10 @@ function ProjectBoard() {
                           return (
                             <Draggable key={task.id} draggableId={task.id} index={idx}>
                               {(prov, snap) => (
-                                <motion.div
+                                <div
                                   ref={prov.innerRef}
                                   {...prov.draggableProps}
                                   {...prov.dragHandleProps}
-                                  layout
                                   onClick={() => setOpenTask(task.id)}
                                   style={{
                                     ...prov.draggableProps.style,
@@ -211,7 +210,7 @@ function ProjectBoard() {
                                     </div>
                                     {assignee && <UserAvatar user={assignee} size={22} />}
                                   </div>
-                                </motion.div>
+                                </div>
                               )}
                             </Draggable>
                           );
