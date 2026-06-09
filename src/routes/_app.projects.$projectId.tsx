@@ -2,7 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 
 import { DragDropContext, Droppable, Draggable, type DropResult } from "@hello-pangea/dnd";
 import { ArrowLeft, Plus, Calendar, MessageSquare } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAppStore, type Status, type Priority } from "@/store/useAppStore";
 import { AvatarStack, UserAvatar } from "@/components/UserAvatar";
 import { PriorityBadge } from "@/components/PriorityBadge";
@@ -56,8 +56,17 @@ function ProjectBoard() {
   const project = useAppStore((s) => s.projects.find((p) => p.id === projectId));
   const tasks = useAppStore((s) => s.tasks.filter((t) => t.projectId === projectId));
   const users = useAppStore((s) => s.users);
-  const moveTask = useAppStore((s) => s.moveTask);
+  const updateTaskPosition = useAppStore((s) => s.updateTaskPosition);
   const addTask = useAppStore((s) => s.addTask);
+  const socketJoinProject = useAppStore((s) => s.socketJoinProject);
+  const socketLeaveProject = useAppStore((s) => s.socketLeaveProject);
+
+  useEffect(() => {
+    socketJoinProject(projectId);
+    return () => {
+      socketLeaveProject(projectId);
+    };
+  }, [projectId, socketJoinProject, socketLeaveProject]);
 
   const [openTask, setOpenTask] = useState<string | null>(null);
   const [newOpen, setNewOpen] = useState(false);
@@ -83,7 +92,34 @@ function ProjectBoard() {
 
   const onDragEnd = (result: DropResult) => {
     if (!result.destination) return;
-    moveTask(result.draggableId, result.destination.droppableId as Status);
+
+    const { source, destination, draggableId } = result;
+    const destStatus = destination.droppableId as Status;
+    const destIndex = destination.index;
+
+    // Get tasks in target column sorted by position
+    const colTasks = tasks
+      .filter((t) => t.status === destStatus && t.id !== draggableId)
+      .sort((a, b) => a.position - b.position);
+
+    let newPosition = 1000;
+
+    if (colTasks.length === 0) {
+      newPosition = 1000;
+    } else if (destIndex === 0) {
+      // Dropped at top
+      newPosition = colTasks[0].position / 2;
+    } else if (destIndex >= colTasks.length) {
+      // Dropped at bottom
+      newPosition = colTasks[colTasks.length - 1].position + 1000;
+    } else {
+      // Dropped in between
+      const prevTask = colTasks[destIndex - 1];
+      const nextTask = colTasks[destIndex];
+      newPosition = (prevTask.position + nextTask.position) / 2;
+    }
+
+    updateTaskPosition(draggableId, newPosition, destStatus);
   };
 
   const openNew = (col: Status) => {

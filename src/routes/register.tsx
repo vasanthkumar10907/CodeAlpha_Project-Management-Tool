@@ -18,11 +18,12 @@ export const Route = createFileRoute("/register")({
 });
 
 function RegisterPage() {
-  const login = useAppStore((s) => s.login);
+  const register = useAppStore((s) => s.register);
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2 bg-background">
@@ -41,10 +42,14 @@ function RegisterPage() {
           <p className="mt-2 text-sm text-muted-foreground">Start planning in under a minute.</p>
 
           <form
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              login();
-              navigate({ to: "/dashboard" });
+              setLoading(true);
+              const success = await register(name, email, password);
+              setLoading(false);
+              if (success) {
+                navigate({ to: "/dashboard" });
+              }
             }}
             className="mt-8 space-y-4"
           >
@@ -60,8 +65,8 @@ function RegisterPage() {
               <Label htmlFor="password">Password</Label>
               <Input id="password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className="h-11" />
             </div>
-            <Button type="submit" variant="hero" className="w-full h-11">
-              Create account <ArrowRight className="size-4" />
+            <Button type="submit" variant="hero" className="w-full h-11" disabled={loading}>
+              {loading ? "Creating account..." : "Create account"} <ArrowRight className="size-4" />
             </Button>
           </form>
 

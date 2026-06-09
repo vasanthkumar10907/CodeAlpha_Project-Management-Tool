@@ -30,3 +30,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Database and env secrets
+*.sqlite
+.env
+backend/.env
+backend/database.sqlite

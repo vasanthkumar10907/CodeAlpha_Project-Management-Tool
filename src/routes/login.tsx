@@ -21,7 +21,8 @@ function LoginPage() {
   const login = useAppStore((s) => s.login);
   const navigate = useNavigate();
   const [email, setEmail] = useState("alex@team.io");
-  const [password, setPassword] = useState("••••••••");
+  const [password, setPassword] = useState("password123");
+  const [loading, setLoading] = useState(false);
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2 bg-background">
@@ -53,10 +54,14 @@ function LoginPage() {
           <p className="mt-2 text-sm text-muted-foreground">Welcome back to your workspace.</p>
 
           <form
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              login();
-              navigate({ to: "/dashboard" });
+              setLoading(true);
+              const success = await login(email, password);
+              setLoading(false);
+              if (success) {
+                navigate({ to: "/dashboard" });
+              }
             }}
             className="mt-8 space-y-4"
           >
@@ -68,8 +73,8 @@ function LoginPage() {
               <Label htmlFor="password">Password</Label>
               <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="h-11" />
             </div>
-            <Button type="submit" variant="hero" className="w-full h-11">
-              Sign in <ArrowRight className="size-4" />
+            <Button type="submit" variant="hero" className="w-full h-11" disabled={loading}>
+              {loading ? "Signing in..." : "Sign in"} <ArrowRight className="size-4" />
             </Button>
           </form>
 

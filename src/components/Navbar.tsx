@@ -19,7 +19,15 @@ export function Navbar() {
   const markAllRead = useAppStore((s) => s.markAllRead);
   const users = useAppStore((s) => s.users);
   const currentUserId = useAppStore((s) => s.currentUserId);
-  const me = users.find((u) => u.id === currentUserId)!;
+  const me = users.find((u) => u.id === currentUserId);
+  const displayUser = me || {
+    id: currentUserId || "0",
+    name: "Loading...",
+    avatar: "L",
+    color: "#6366F1",
+    email: "loading...",
+    role: "member"
+  };
   const unread = notifications.filter((n) => !n.read).length;
 
   return (
@@ -70,13 +78,13 @@ export function Navbar() {
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button className="ml-2 rounded-full">
-              <UserAvatar user={me} size={36} />
+              <UserAvatar user={displayUser} size={36} />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">
             <DropdownMenuLabel>
-              <div className="font-semibold">{me.name}</div>
-              <div className="text-xs text-muted-foreground font-normal">{me.email}</div>
+              <div className="font-semibold">{displayUser.name}</div>
+              <div className="text-xs text-muted-foreground font-normal">{displayUser.email}</div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem>Profile</DropdownMenuItem>

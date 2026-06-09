@@ -1,22 +1,48 @@
-import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
-import { useState } from "react";
+import { createFileRoute, Outlet, useNavigate } from "@tanstack/react-router";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Sidebar } from "@/components/Sidebar";
 import { Navbar } from "@/components/Navbar";
 import { useAppStore } from "@/store/useAppStore";
 
 export const Route = createFileRoute("/_app")({
-  beforeLoad: () => {
-    if (typeof window !== "undefined") {
-      const authed = useAppStore.getState().authed;
-      if (!authed) throw redirect({ to: "/login" });
-    }
-  },
   component: AppLayout,
 });
 
 function AppLayout() {
+  const authed = useAppStore((s) => s.authed);
+  const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
+  const initializeData = useAppStore((s) => s.initializeData);
+  const initSocket = useAppStore((s) => s.initSocket);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (mounted && !authed) {
+      navigate({ to: "/login" });
+    }
+  }, [authed, mounted, navigate]);
+
+  useEffect(() => {
+    if (mounted && authed) {
+      initSocket();
+      initializeData();
+    }
+  }, [mounted, authed, initSocket, initializeData]);
+
+  if (!mounted) {
+    return <div className="min-h-screen bg-background" />;
+  }
+
+  if (!authed) {
+    return null;
+  }
+
   return (
     <div className="flex min-h-screen w-full bg-background text-foreground">
       <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />

@@ -1,5 +1,8 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { io, Socket } from "socket.io-client";
+import { toast } from "sonner";
+import { apiRequest } from "@/lib/api";
 
 export type Priority = "high" | "medium" | "low";
 export type Status = "todo" | "in_progress" | "review" | "done";
@@ -7,7 +10,7 @@ export type Status = "todo" | "in_progress" | "review" | "done";
 export interface User {
   id: string;
   name: string;
-  avatar: string; // initials color seed
+  avatar: string; // initials or URL
   color: string;
   email: string;
   role: string;
@@ -30,6 +33,7 @@ export interface Task {
   priority: Priority;
   assigneeId: string | null;
   dueDate: string | null;
+  position: number;
   createdAt: string;
 }
 
@@ -52,134 +56,599 @@ export interface Notification {
 interface AppState {
   theme: "dark" | "light";
   authed: boolean;
+  token: string | null;
   currentUserId: string;
   users: User[];
   projects: Project[];
   tasks: Task[];
   comments: Comment[];
   notifications: Notification[];
+  socket: Socket | null;
 
   toggleTheme: () => void;
   setTheme: (t: "dark" | "light") => void;
-  login: () => void;
-  logout: () => void;
+  setToken: (token: string | null) => void;
+  
+  // Auth actions
+  login: (email?: string, password?: string) => Promise<boolean>;
+  register: (name: string, email: string, password: string) => Promise<boolean>;
+  logout: () => Promise<void>;
+  
+  // Initial loading
+  initializeData: () => Promise<void>;
 
-  addProject: (p: Omit<Project, "id" | "createdAt">) => string;
-  updateProject: (id: string, p: Partial<Project>) => void;
-  deleteProject: (id: string) => void;
+  // Project CRUD
+  addProject: (p: Omit<Project, "id" | "createdAt">) => Promise<string | null>;
+  updateProject: (id: string, p: Partial<Project>) => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
 
-  addTask: (t: Omit<Task, "id" | "createdAt">) => string;
-  updateTask: (id: string, t: Partial<Task>) => void;
-  deleteTask: (id: string) => void;
-  moveTask: (id: string, status: Status) => void;
+  // Task CRUD & Kanban
+  addTask: (t: Omit<Task, "id" | "createdAt" | "position">) => Promise<string | null>;
+  updateTask: (id: string, t: Partial<Task>) => Promise<void>;
+  deleteTask: (id: string) => Promise<void>;
+  moveTask: (id: string, status: Status) => Promise<void>;
+  updateTaskPosition: (id: string, position: number, status?: Status) => Promise<void>;
 
-  addComment: (taskId: string, text: string) => void;
+  // Comments & Notifications
+  addComment: (taskId: string, text: string) => Promise<void>;
+  markAllRead: () => Promise<void>;
 
-  markAllRead: () => void;
+  // Socket triggers
+  socketJoinProject: (projectId: string) => void;
+  socketLeaveProject: (projectId: string) => void;
+  socketJoinTask: (taskId: string) => void;
+  socketLeaveTask: (taskId: string) => void;
+  initSocket: () => void;
 }
 
-const uid = () => Math.random().toString(36).slice(2, 10);
+// Entity mappers to reconcile backend SQLite types with frontend store interfaces
+const mapUser = (u: any): User => ({
+  id: String(u.id),
+  name: u.name,
+  avatar: u.avatar_url || u.name.split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase(),
+  color: u.color || '#6366F1',
+  email: u.email,
+  role: u.role || 'member'
+});
 
-const users: User[] = [
-  { id: "u1", name: "Alex Morgan", avatar: "AM", color: "#6366F1", email: "alex@team.io", role: "Product Lead" },
-  { id: "u2", name: "Priya Shah", avatar: "PS", color: "#22C55E", email: "priya@team.io", role: "Engineer" },
-  { id: "u3", name: "Diego Reyes", avatar: "DR", color: "#F59E0B", email: "diego@team.io", role: "Designer" },
-  { id: "u4", name: "Mei Chen", avatar: "MC", color: "#EF4444", email: "mei@team.io", role: "Engineer" },
-  { id: "u5", name: "Jonah Kim", avatar: "JK", color: "#14B8A6", email: "jonah@team.io", role: "PM" },
-];
+const mapProject = (p: any): Project => ({
+  id: String(p.id),
+  name: p.name,
+  description: p.description || '',
+  memberIds: p.members ? p.members.map((m: any) => String(m.id)) : [String(p.owner_id)],
+  color: p.color || '#6366F1',
+  createdAt: p.created_at
+});
 
-const projects: Project[] = [
-  { id: "p1", name: "Apollo Web Redesign", description: "Marketing site rebuild with new brand", memberIds: ["u1","u2","u3","u4"], color: "#6366F1", createdAt: new Date().toISOString() },
-  { id: "p2", name: "Mobile App v2", description: "iOS & Android shipping next quarter", memberIds: ["u2","u4","u5"], color: "#14B8A6", createdAt: new Date().toISOString() },
-  { id: "p3", name: "Onboarding Flow", description: "Reduce drop-off in first session", memberIds: ["u1","u3","u5"], color: "#F59E0B", createdAt: new Date().toISOString() },
-];
+const mapTask = (t: any): Task => ({
+  id: String(t.id),
+  projectId: String(t.project_id),
+  title: t.title,
+  description: t.description || '',
+  status: t.status === 'inprogress' ? 'in_progress' : t.status,
+  priority: t.priority,
+  assigneeId: t.assignee_id ? String(t.assignee_id) : null,
+  dueDate: t.due_date,
+  position: Number(t.position || 0),
+  createdAt: t.created_at
+});
 
-const today = new Date();
-const addDays = (n: number) => new Date(today.getTime() + n * 86400000).toISOString();
+const mapComment = (c: any): Comment => ({
+  id: String(c.id),
+  taskId: String(c.task_id),
+  authorId: String(c.user_id),
+  text: c.content,
+  createdAt: c.created_at
+});
 
-const tasks: Task[] = [
-  { id: "t1", projectId: "p1", title: "Define hero composition", description: "Decide between split-screen and centered hero.", status: "todo", priority: "high", assigneeId: "u3", dueDate: addDays(0), createdAt: today.toISOString() },
-  { id: "t2", projectId: "p1", title: "Audit competitor sites", description: "Pull 6 references and annotate.", status: "todo", priority: "low", assigneeId: "u1", dueDate: addDays(3), createdAt: today.toISOString() },
-  { id: "t3", projectId: "p1", title: "Build navigation component", description: "Sticky header with collapse on scroll.", status: "in_progress", priority: "medium", assigneeId: "u2", dueDate: addDays(2), createdAt: today.toISOString() },
-  { id: "t4", projectId: "p1", title: "Color token migration", description: "Move all colors into design tokens.", status: "in_progress", priority: "high", assigneeId: "u4", dueDate: addDays(1), createdAt: today.toISOString() },
-  { id: "t5", projectId: "p1", title: "QA pricing page", description: "", status: "review", priority: "medium", assigneeId: "u5", dueDate: addDays(4), createdAt: today.toISOString() },
-  { id: "t6", projectId: "p1", title: "Ship footer redesign", description: "", status: "done", priority: "low", assigneeId: "u3", dueDate: addDays(-2), createdAt: today.toISOString() },
-  { id: "t7", projectId: "p2", title: "Push notification permission flow", description: "", status: "todo", priority: "medium", assigneeId: "u4", dueDate: addDays(0), createdAt: today.toISOString() },
-  { id: "t8", projectId: "p2", title: "Refactor auth module", description: "", status: "in_progress", priority: "high", assigneeId: "u2", dueDate: addDays(5), createdAt: today.toISOString() },
-  { id: "t9", projectId: "p2", title: "App icon variants", description: "", status: "done", priority: "low", assigneeId: "u5", dueDate: addDays(-5), createdAt: today.toISOString() },
-  { id: "t10", projectId: "p3", title: "Write welcome copy", description: "", status: "review", priority: "low", assigneeId: "u1", dueDate: addDays(1), createdAt: today.toISOString() },
-  { id: "t11", projectId: "p3", title: "Empty-state illustrations", description: "", status: "in_progress", priority: "medium", assigneeId: "u3", dueDate: addDays(2), createdAt: today.toISOString() },
-];
+const mapNotification = (n: any): Notification => ({
+  id: String(n.id),
+  text: n.message,
+  read: !!n.is_read,
+  createdAt: n.created_at
+});
 
-const comments: Comment[] = [
-  { id: "c1", taskId: "t1", authorId: "u1", text: "Let's go with split-screen for stronger hierarchy.", createdAt: today.toISOString() },
-  { id: "c2", taskId: "t1", authorId: "u3", text: "Agreed — I'll mock both quickly.", createdAt: today.toISOString() },
-];
-
-const notifications: Notification[] = [
-  { id: "n1", text: "Priya assigned you a task on Apollo Web Redesign", read: false, createdAt: today.toISOString() },
-  { id: "n2", text: "Diego commented on “Define hero composition”", read: false, createdAt: today.toISOString() },
-  { id: "n3", text: "Mobile App v2 milestone updated", read: true, createdAt: today.toISOString() },
-];
+// Map status for DB constraints
+const mapStatusToDb = (status: Status): string => {
+  return status === 'in_progress' ? 'inprogress' : status;
+};
 
 export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
       theme: "dark",
       authed: false,
-      currentUserId: "u1",
-      users,
-      projects,
-      tasks,
-      comments,
-      notifications,
+      token: null,
+      currentUserId: "",
+      users: [],
+      projects: [],
+      tasks: [],
+      comments: [],
+      notifications: [],
+      socket: null,
 
       toggleTheme: () => set((s) => ({ theme: s.theme === "dark" ? "light" : "dark" })),
       setTheme: (t) => set({ theme: t }),
-      login: () => set({ authed: true }),
-      logout: () => set({ authed: false }),
+      setToken: (token) => set({ token }),
 
-      addProject: (p) => {
-        const id = uid();
-        set((s) => ({ projects: [...s.projects, { ...p, id, createdAt: new Date().toISOString() }] }));
-        return id;
+      login: async (email, password) => {
+        // Fallback for blank/dev quick logins if no inputs provided
+        const loginEmail = email || 'alex@team.io';
+        const loginPassword = password || 'password123';
+
+        const res = await apiRequest('/auth/login', {
+          method: 'POST',
+          body: { email: loginEmail, password: loginPassword }
+        }, useAppStore);
+
+        if (res.success && res.data?.token) {
+          set({
+            authed: true,
+            token: res.data.token,
+            currentUserId: String(res.data.user.id)
+          });
+          
+          // Connect real-time socket and fetch DB data
+          get().initSocket();
+          await get().initializeData();
+          return true;
+        } else {
+          toast.error(res.message || 'Login failed. Please check credentials.');
+          return false;
+        }
       },
-      updateProject: (id, p) =>
-        set((s) => ({ projects: s.projects.map((x) => (x.id === id ? { ...x, ...p } : x)) })),
-      deleteProject: (id) =>
-        set((s) => ({
-          projects: s.projects.filter((x) => x.id !== id),
-          tasks: s.tasks.filter((t) => t.projectId !== id),
-        })),
 
-      addTask: (t) => {
-        const id = uid();
-        set((s) => ({ tasks: [...s.tasks, { ...t, id, createdAt: new Date().toISOString() }] }));
-        return id;
+      register: async (name, email, password) => {
+        const res = await apiRequest('/auth/register', {
+          method: 'POST',
+          body: { name, email, password }
+        }, useAppStore);
+
+        if (res.success && res.data?.token) {
+          set({
+            authed: true,
+            token: res.data.token,
+            currentUserId: String(res.data.user.id)
+          });
+          
+          get().initSocket();
+          await get().initializeData();
+          return true;
+        } else {
+          toast.error(res.message || 'Registration failed.');
+          return false;
+        }
       },
-      updateTask: (id, t) =>
-        set((s) => ({ tasks: s.tasks.map((x) => (x.id === id ? { ...x, ...t } : x)) })),
-      deleteTask: (id) => set((s) => ({ tasks: s.tasks.filter((x) => x.id !== id) })),
-      moveTask: (id, status) =>
-        set((s) => ({ tasks: s.tasks.map((x) => (x.id === id ? { ...x, status } : x)) })),
 
-      addComment: (taskId, text) => {
-        const c: Comment = {
-          id: uid(),
-          taskId,
-          authorId: get().currentUserId,
-          text,
-          createdAt: new Date().toISOString(),
+      logout: async () => {
+        // Disconnect socket if exists
+        const socket = get().socket;
+        if (socket) {
+          socket.disconnect();
+        }
+
+        // Call backend logout to clear refresh cookie & invalidate token
+        await apiRequest('/auth/logout', { method: 'POST' }, useAppStore);
+
+        // Reset local state
+        set({
+          authed: false,
+          token: null,
+          currentUserId: "",
+          users: [],
+          projects: [],
+          tasks: [],
+          comments: [],
+          notifications: [],
+          socket: null
+        });
+      },
+
+      initializeData: async () => {
+        if (!get().authed || !get().token) return;
+
+        // Fetch users
+        const usersRes = await apiRequest('/users', {}, useAppStore);
+        if (usersRes.success) {
+          set({ users: usersRes.data.map(mapUser) });
+        }
+
+        // Fetch projects
+        const projectsRes = await apiRequest('/projects', {}, useAppStore);
+        if (projectsRes.success) {
+          const mappedProjs = projectsRes.data.map(mapProject);
+          set({ projects: mappedProjs });
+
+          // Fetch tasks for all active projects
+          const allTasks: Task[] = [];
+          for (const proj of mappedProjs) {
+            const tasksRes = await apiRequest(`/tasks/project/${proj.id}`, {}, useAppStore);
+            if (tasksRes.success) {
+              allTasks.push(...tasksRes.data.map(mapTask));
+            }
+          }
+          set({ tasks: allTasks });
+        }
+
+        // Fetch notifications
+        const notifRes = await apiRequest('/notifications', {}, useAppStore);
+        if (notifRes.success) {
+          set({ notifications: notifRes.data.map(mapNotification) });
+        }
+      },
+
+      addProject: async (p) => {
+        // Create the project first
+        const createRes = await apiRequest('/projects', {
+          method: 'POST',
+          body: {
+            name: p.name,
+            description: p.description,
+            color: p.color
+          }
+        }, useAppStore);
+
+        if (createRes.success && createRes.data) {
+          const projectId = createRes.data.id;
+          
+          // Add other members if specified
+          const currentUserId = get().currentUserId;
+          const otherMembers = p.memberIds.filter(uid => uid !== currentUserId);
+          
+          for (const memberId of otherMembers) {
+            await apiRequest(`/projects/${projectId}/members`, {
+              method: 'POST',
+              body: {
+                userId: parseInt(memberId),
+                role: 'editor'
+              }
+            }, useAppStore);
+          }
+
+          // Fetch full project with members to update local state
+          const fullProjRes = await apiRequest(`/projects/${projectId}`, {}, useAppStore);
+          if (fullProjRes.success && fullProjRes.data) {
+            const newProj = mapProject(fullProjRes.data);
+            set((s) => ({ projects: [newProj, ...s.projects] }));
+            toast.success('Project created successfully!');
+            return newProj.id;
+          }
+        }
+        
+        toast.error(createRes.message || 'Failed to create project.');
+        return null;
+      },
+
+      updateProject: async (id, p) => {
+        // 1. Update project details
+        const detailsRes = await apiRequest(`/projects/${id}`, {
+          method: 'PUT',
+          body: {
+            name: p.name,
+            description: p.description,
+            color: p.color
+          }
+        }, useAppStore);
+
+        if (!detailsRes.success) {
+          toast.error(detailsRes.message || 'Failed to update project.');
+          return;
+        }
+
+        // 2. Sync members if provided
+        if (p.memberIds) {
+          const project = get().projects.find(x => x.id === id);
+          if (project) {
+            const oldMembers = project.memberIds;
+            const newMembers = p.memberIds;
+
+            // Members to add
+            const toAdd = newMembers.filter(mid => !oldMembers.includes(mid));
+            // Members to remove (can't remove owner)
+            const currentUserId = get().currentUserId;
+            const toRemove = oldMembers.filter(mid => !newMembers.includes(mid) && mid !== currentUserId);
+
+            for (const mid of toAdd) {
+              await apiRequest(`/projects/${id}/members`, {
+                method: 'POST',
+                body: { userId: parseInt(mid), role: 'editor' }
+              }, useAppStore);
+            }
+
+            for (const mid of toRemove) {
+              await apiRequest(`/projects/${id}/members/${mid}`, {
+                method: 'DELETE'
+              }, useAppStore);
+            }
+          }
+        }
+
+        // Fetch updated project
+        const updatedRes = await apiRequest(`/projects/${id}`, {}, useAppStore);
+        if (updatedRes.success && updatedRes.data) {
+          const updated = mapProject(updatedRes.data);
+          set((s) => ({
+            projects: s.projects.map((x) => (x.id === id ? updated : x))
+          }));
+          toast.success('Project details updated.');
+        }
+      },
+
+      deleteProject: async (id) => {
+        const res = await apiRequest(`/projects/${id}`, {
+          method: 'DELETE'
+        }, useAppStore);
+
+        if (res.success) {
+          set((s) => ({
+            projects: s.projects.filter((x) => x.id !== id),
+            tasks: s.tasks.filter((t) => t.projectId !== id)
+          }));
+          toast.success('Project deleted.');
+        } else {
+          toast.error(res.message || 'Failed to delete project.');
+        }
+      },
+
+      addTask: async (t) => {
+        const payload = {
+          ...t,
+          project_id: parseInt(t.projectId),
+          assignee_id: t.assigneeId ? parseInt(t.assigneeId) : null,
+          status: mapStatusToDb(t.status),
+          due_date: t.dueDate
         };
-        set((s) => ({ comments: [...s.comments, c] }));
+
+        const res = await apiRequest('/tasks', {
+          method: 'POST',
+          body: payload
+        }, useAppStore);
+
+        if (res.success && res.data) {
+          const newTask = mapTask(res.data);
+          // Socket will broadcast this, but we append locally for snappy UI if not received
+          set((s) => {
+            if (s.tasks.some(x => x.id === newTask.id)) return s;
+            return { tasks: [...s.tasks, newTask] };
+          });
+          return newTask.id;
+        } else {
+          toast.error(res.message || 'Failed to add task.');
+          return null;
+        }
       },
 
-      markAllRead: () =>
-        set((s) => ({ notifications: s.notifications.map((n) => ({ ...n, read: true })) })),
+      updateTask: async (id, t) => {
+        const payload: any = { ...t };
+        if (t.projectId) payload.project_id = parseInt(t.projectId);
+        if (t.assigneeId !== undefined) payload.assignee_id = t.assigneeId ? parseInt(t.assigneeId) : null;
+        if (t.status) payload.status = mapStatusToDb(t.status);
+        if (t.dueDate !== undefined) payload.due_date = t.dueDate;
+
+        const res = await apiRequest(`/tasks/${id}`, {
+          method: 'PUT',
+          body: payload
+        }, useAppStore);
+
+        if (res.success && res.data) {
+          const updated = mapTask(res.data);
+          set((s) => ({
+            tasks: s.tasks.map((x) => (x.id === id ? { ...x, ...updated } : x))
+          }));
+        } else {
+          toast.error(res.message || 'Failed to update task.');
+        }
+      },
+
+      deleteTask: async (id) => {
+        const res = await apiRequest(`/tasks/${id}`, {
+          method: 'DELETE'
+        }, useAppStore);
+
+        if (res.success) {
+          set((s) => ({ tasks: s.tasks.filter((x) => x.id !== id) }));
+        } else {
+          toast.error(res.message || 'Failed to delete task.');
+        }
+      },
+
+      moveTask: async (id, status) => {
+        // Optimistic UI update
+        set((s) => ({
+          tasks: s.tasks.map((x) => (x.id === id ? { ...x, status } : x))
+        }));
+
+        const res = await apiRequest(`/tasks/${id}/status`, {
+          method: 'PATCH',
+          body: { status: mapStatusToDb(status) }
+        }, useAppStore);
+
+        if (!res.success) {
+          toast.error(res.message || 'Failed to move task.');
+          // Revert on failure
+          get().initializeData();
+        }
+      },
+
+      updateTaskPosition: async (id, position, status) => {
+        // Optimistic UI update
+        set((s) => ({
+          tasks: s.tasks.map((x) => (x.id === id ? { ...x, position, ...(status ? { status } : {}) } : x))
+        }));
+
+        const res = await apiRequest(`/tasks/${id}/position`, {
+          method: 'PATCH',
+          body: {
+            position,
+            ...(status ? { status: mapStatusToDb(status) } : {})
+          }
+        }, useAppStore);
+
+        if (!res.success) {
+          toast.error(res.message || 'Failed to update task position.');
+          get().initializeData();
+        }
+      },
+
+      addComment: async (taskId, text) => {
+        const res = await apiRequest('/comments', {
+          method: 'POST',
+          body: {
+            task_id: parseInt(taskId),
+            content: text
+          }
+        }, useAppStore);
+
+        if (res.success && res.data) {
+          const newComment = mapComment(res.data);
+          set((s) => ({ comments: [...s.comments, newComment] }));
+        } else {
+          toast.error(res.message || 'Failed to add comment.');
+        }
+      },
+
+      markAllRead: async () => {
+        const res = await apiRequest('/notifications/read-all', {
+          method: 'PATCH'
+        }, useAppStore);
+
+        if (res.success) {
+          set((s) => ({
+            notifications: s.notifications.map((n) => ({ ...n, read: true }))
+          }));
+        } else {
+          toast.error(res.message || 'Failed to mark notifications read.');
+        }
+      },
+
+      // ================= SOCKET TRIGGERS & LISTENERS =================
+
+      socketJoinProject: (projectId) => {
+        const socket = get().socket;
+        if (socket) {
+          socket.emit('joinProject', parseInt(projectId));
+        }
+      },
+
+      socketLeaveProject: (projectId) => {
+        const socket = get().socket;
+        if (socket) {
+          socket.emit('leaveProject', parseInt(projectId));
+        }
+      },
+
+      socketJoinTask: (taskId) => {
+        const socket = get().socket;
+        if (socket) {
+          socket.emit('joinTask', parseInt(taskId));
+        }
+      },
+
+      socketLeaveTask: (taskId) => {
+        const socket = get().socket;
+        if (socket) {
+          // Socket.io doesn't have an explicit leaveTask listener registered,
+          // but we can leave the room or let connection handle it.
+          // Leaving the task room is not strictly required but we can leave it.
+          socket.emit('leaveTask', parseInt(taskId));
+        }
+      },
+
+      initSocket: () => {
+        const token = get().token;
+        if (!token) return;
+
+        // Clean up previous socket if exists
+        const currentSocket = get().socket;
+        if (currentSocket) {
+          currentSocket.disconnect();
+        }
+
+        console.log('Connecting to Socket.io backend...');
+        const socket = io('http://localhost:5000', {
+          auth: { token }
+        });
+
+        socket.on('connect', () => {
+          console.log('Socket.io connected successfully!');
+          // Re-register rooms if currently on a project details page
+          const location = typeof window !== 'undefined' ? window.location.pathname : '';
+          const match = location.match(/\/projects\/(\d+)/);
+          if (match && match[1]) {
+            socket.emit('joinProject', parseInt(match[1]));
+          }
+        });
+
+        // Task created event broadcasted to project room
+        socket.on('task:created', (data: any) => {
+          const newTask = mapTask(data);
+          set((s) => {
+            if (s.tasks.some((t) => t.id === newTask.id)) return s;
+            return { tasks: [...s.tasks, newTask] };
+          });
+        });
+
+        // Task updated event broadcasted to project room
+        socket.on('task:updated', (data: any) => {
+          const updatedTask = mapTask(data);
+          set((s) => ({
+            tasks: s.tasks.map((t) => (t.id === updatedTask.id ? updatedTask : t))
+          }));
+        });
+
+        // Task deleted event broadcasted to project room
+        socket.on('task:deleted', (data: any) => {
+          const deletedId = String(data.id);
+          set((s) => ({
+            tasks: s.tasks.filter((t) => t.id !== deletedId)
+          }));
+        });
+
+        // Task moved event (Kanban drag-drop)
+        socket.on('task:moved', (data: any) => {
+          const movedTask = mapTask(data);
+          set((s) => ({
+            tasks: s.tasks.map((t) => (t.id === movedTask.id ? movedTask : t))
+          }));
+        });
+
+        // Comment added event broadcasted to task room
+        socket.on('comment:added', (data: any) => {
+          const newComment = mapComment(data);
+          set((s) => {
+            if (s.comments.some((c) => c.id === newComment.id)) return s;
+            return { comments: [...s.comments, newComment] };
+          });
+        });
+
+        // Private notification received
+        socket.on('notification:new', (data: any) => {
+          const notif = mapNotification(data);
+          set((s) => {
+            if (s.notifications.some((n) => n.id === notif.id)) return s;
+            return { notifications: [notif, ...s.notifications] };
+          });
+          // Show real-time notification toast
+          toast.info(notif.text, {
+            description: 'New Task Action Assigned'
+          });
+        });
+
+        socket.on('disconnect', () => {
+          console.log('Socket.io disconnected.');
+        });
+
+        set({ socket });
+      }
     }),
     {
       name: "pm-app-store",
-      partialize: (s) => ({ theme: s.theme, authed: s.authed }),
-    },
-  ),
+      partialize: (s) => ({
+        theme: s.theme,
+        authed: s.authed,
+        token: s.token,
+        currentUserId: s.currentUserId
+      })
+    }
+  )
 );

@@ -42,7 +42,14 @@ export function TaskDetailModal({ taskId, onClose }: { taskId: string | null; on
   if (!task) return null;
   const assignee = users.find((u) => u.id === task.assigneeId);
   const taskComments = comments.filter((c) => c.taskId === task.id);
-  const me = users.find((u) => u.id === currentUserId)!;
+  const me = users.find((u) => u.id === currentUserId) || {
+    id: currentUserId || "0",
+    name: "User",
+    avatar: "U",
+    color: "#6366F1",
+    email: "",
+    role: "member"
+  };
 
   const saveTitle = () => { if (title !== task.title) updateTask(task.id, { title }); };
   const saveDesc = () => { if (desc !== task.description) updateTask(task.id, { description: desc }); };
@@ -157,7 +164,14 @@ export function TaskDetailModal({ taskId, onClose }: { taskId: string | null; on
           </h4>
           <div className="space-y-4">
             {taskComments.map((c) => {
-              const author = users.find((u) => u.id === c.authorId)!;
+              const author = users.find((u) => u.id === c.authorId) || {
+                id: c.authorId,
+                name: "Deleted User",
+                avatar: "D",
+                color: "#9CA3AF",
+                email: "",
+                role: "member"
+              };
               return (
                 <div key={c.id} className="flex gap-3">
                   <UserAvatar user={author} size={32} />

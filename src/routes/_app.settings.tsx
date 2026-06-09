@@ -21,7 +21,15 @@ function SettingsPage() {
   const toggleTheme = useAppStore((s) => s.toggleTheme);
   const users = useAppStore((s) => s.users);
   const currentUserId = useAppStore((s) => s.currentUserId);
-  const me = users.find((u) => u.id === currentUserId)!;
+  const me = users.find((u) => u.id === currentUserId);
+  const displayUser = me || {
+    id: currentUserId || "0",
+    name: "Loading...",
+    avatar: "L",
+    color: "#6366F1",
+    email: "loading...",
+    role: "member"
+  };
 
   return (
     <div className="p-8 max-w-3xl mx-auto">
@@ -32,20 +40,20 @@ function SettingsPage() {
         <section className="rounded-xl bg-card border border-border p-6">
           <h2 className="font-display font-semibold text-lg mb-4">Profile</h2>
           <div className="flex items-center gap-4 mb-6">
-            <UserAvatar user={me} size={64} />
+            <UserAvatar user={displayUser} size={64} />
             <div>
-              <div className="font-semibold">{me.name}</div>
-              <div className="text-sm text-muted-foreground">{me.role}</div>
+              <div className="font-semibold">{displayUser.name}</div>
+              <div className="text-sm text-muted-foreground">{displayUser.role}</div>
             </div>
           </div>
           <div className="grid sm:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>Display name</Label>
-              <Input defaultValue={me.name} className="h-11" />
+              <Input defaultValue={displayUser.name} className="h-11" />
             </div>
             <div className="space-y-2">
               <Label>Email</Label>
-              <Input defaultValue={me.email} className="h-11" />
+              <Input defaultValue={displayUser.email} className="h-11" />
             </div>
           </div>
           <div className="mt-4 flex justify-end">
