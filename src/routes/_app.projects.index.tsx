@@ -27,7 +27,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 
-export const Route = createFileRoute("/_app/projects")({
+export const Route = createFileRoute("/_app/projects/")({
   head: () => ({
     meta: [
       { title: "Projects — Plane" },
